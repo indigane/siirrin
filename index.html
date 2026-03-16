@@ -1,0 +1,1446 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>LAN WebRTC & Transfer</title>
+    <script src="mqtt-5.15.0.min.js"></script>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            max-width: 800px;
+            margin: auto;
+        }
+        .fingerprint {
+            color: green;
+            font-weight: bold;
+            background: #eee;
+            padding: 2px 5px;
+        }
+        .fingerprint-grid {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .fingerprint-panel {
+            flex: 1 1 320px;
+            min-width: 0;
+        }
+        .fingerprint-emoji {
+            display: inline-block;
+            font-size: 1.4em;
+            letter-spacing: 0.15em;
+            margin-bottom: 4px;
+        }
+        .fingerprint-art {
+            display: block;
+            margin: 8px 0;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #ccc;
+            color: #333;
+            font-size: 0.78em;
+            line-height: 1.15;
+            white-space: pre;
+            overflow-x: auto;
+        }
+        .fingerprint-hex {
+            display: inline-block;
+            font-size: 0.85em;
+            line-height: 1.5;
+            word-break: break-all;
+        }
+        .panel {
+            border: 1px solid #ccc;
+            padding: 15px;
+            margin-top: 15px;
+            background: #fafafa;
+        }
+        button,
+        input,
+        textarea {
+            font: inherit;
+            font-size: 16px;
+        }
+        button {
+            min-height: 42px;
+        }
+        input[type="text"],
+        textarea,
+        input[type="file"] {
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        textarea {
+            height: 100px;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        #chatLog {
+            border: 1px solid #999;
+            min-height: 260px;
+            max-height: 55vh;
+            overflow-y: auto;
+            padding: 10px;
+            background: #fff;
+            white-space: pre-wrap;
+        }
+        .disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .pin-display {
+            font-size: 1.5em;
+            color: #0056b3;
+            letter-spacing: 2px;
+        }
+        .flex-container {
+            display: flex;
+            gap: 15px;
+        }
+        .flex-child {
+            flex: 1;
+        }
+        .text-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        .secure-input.concealed {
+            -webkit-text-security: disc;
+        }
+        .message-text.concealed {
+            -webkit-text-security: disc;
+            color: transparent;
+            text-shadow: 0 0 8px rgba(0, 0, 0, 0.65);
+        }
+        .message-card {
+            border: 1px solid #ccc;
+            background: #f8f8f8;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .message-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        .message-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .message-text {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+        }
+        .message-text.collapsed {
+            max-height: 8.5em;
+            overflow: hidden;
+            position: relative;
+        }
+        .message-text.collapsed.collapsed-overflow::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 2.5em;
+            background: linear-gradient(to bottom, rgba(248, 248, 248, 0), rgba(248, 248, 248, 1));
+        }
+        .message-status {
+            color: #555;
+            font-size: 0.9em;
+            min-width: 60px;
+        }
+        .broker-status.connected {
+            color: green;
+        }
+
+        .broker-status.disconnected {
+            color: red;
+        }
+        @media (max-width: 700px) {
+            body {
+                padding: 12px;
+            }
+            .flex-container {
+                flex-direction: column;
+            }
+            .panel {
+                padding: 12px;
+            }
+            .fingerprint-panel {
+                flex-basis: 100%;
+            }
+            #chatLog {
+                min-height: 180px;
+                max-height: 40vh;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Local Transfer</h2>
+
+    <div class="flex-container">
+        <div class="panel flex-child">
+            <h3>1. Host (Device A)</h3>
+            <button onclick="hostSession()">Generate PIN & Host</button>
+            <p>Your PIN: <strong id="generatedPin" class="pin-display"></strong></p>
+        </div>
+
+        <div class="panel flex-child">
+            <h3>2. Join (Device B)</h3>
+            <label>Enter Host's PIN: </label><br><br>
+            <input type="text" id="joinPinInput" autofocus style="font-size: 16px; width: 100%; max-width: 180px;">
+            <button onclick="joinSession()">Join</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <p>MQTT: <strong id="mqttStatus" class="broker-status disconnected">Disconnected</strong></p>
+        <p>WebRTC: <strong id="status" style="color:red;">Disconnected</strong></p>
+        <div class="fingerprint-grid">
+            <div class="fingerprint-panel">
+                <p>Host Fingerprint:<br><span id="hostFingerprint" class="fingerprint fingerprint-emoji">Waiting...</span><br><pre id="hostFingerprintArt" class="fingerprint-art">Waiting...</pre><span id="hostFingerprintHex" class="fingerprint fingerprint-hex">Waiting...</span></p>
+            </div>
+            <div class="fingerprint-panel">
+                <p>Joiner Fingerprint:<br><span id="joinerFingerprint" class="fingerprint fingerprint-emoji">Waiting...</span><br><pre id="joinerFingerprintArt" class="fingerprint-art">Waiting...</pre><span id="joinerFingerprintHex" class="fingerprint fingerprint-hex">Waiting...</span></p>
+            </div>
+        </div>
+    </div>
+
+    <div id="transferPanel" class="panel disabled">
+        <h3>Transfer Data</h3>
+
+        <label><strong>Send Text/Code:</strong></label>
+        <textarea id="textInput"></textarea>
+        <div class="text-actions">
+            <button type="button" id="textVisibilityToggle" onclick="toggleTextInputVisibility()">Show Text</button>
+            <span id="textVisibilityHint">Hidden while typing</span>
+            <button onclick="sendText()">Send Text</button>
+        </div>
+
+        <hr>
+
+        <label><strong>Send File:</strong></label><br>
+        <input type="file" id="fileInput">
+        <button onclick="sendFile()">Send File</button>
+        <span id="fileProgress"></span>
+
+        <hr>
+
+        <label><strong>Received Data:</strong></label>
+        <div id="chatLog"></div>
+    </div>
+
+    <script>
+        const SIGNALING_NAMESPACE = "nvwzhguas2xz4TjRwU3Km97YgFNKWpZrWMMvLoHZ";
+        const SIGNALING_TOPIC_CONTEXT = 'topic-v1';
+        const CHUNK_SIZE = 16384; // 16KB for safe WebRTC transmission
+        const MQTT_SERVER_URL = 'wss://broker.hivemq.com:8884/mqtt';
+        // const MQTT_SERVER_URL = 'wss://test.mosquitto.org:8081';
+        // const MQTT_SERVER_URL = 'wss://broker.emqx.io:8084';
+        const PIN_LENGTH = 8;
+        const PIN_GROUP_SIZE = 4;
+        const SIGNALING_KEY_ITERATIONS = 150000;
+        const BOOTSTRAP_MAX_AGE_MS = 2 * 60 * 1000;
+        const FINGERPRINT_EMOJIS = ['🐶', '🐱', '🦊', '🐻', '🐼', '🐸', '🦁', '🐵', '🐙', '🦋', '🌈', '🔥', '⚡', '🌊', '🍀', '🌻', '🍎', '🍋', '🍇', '🥕', '🎈', '🎯', '🎵', '🚀', '🚲', '🚗', '🏠', '🧩', '📚', '🔒', '🛡️', '💎'];
+        const textEncoder = new TextEncoder();
+
+        let peerConnection;
+        let dataChannel;
+        let mqttClient;
+        let currentTopic;
+        let hasPublishedOffer = false;
+        let currentPin = '';
+        let activeSessionId = null;
+        let signalingSalt = null;
+        let signalingKey = null;
+        let localSignalSequence = 0;
+        let seenSignalNonces = new Set();
+        let seenRemoteSignalSequences = new Set();
+        let highestRemoteNonCandidateSequence = 0;
+        let isHostingSession = false;
+        let autoJoinTimer = null;
+        let isJoinStarting = false;
+        let hasEstablishedConnection = false;
+        let disconnectStatusTimer = null;
+        let suppressMqttStatusUpdates = false;
+        let manualLanAddress = '';
+
+        // File receiving state
+        let incomingFileInfo = null;
+        let incomingFileData = [];
+        let receivedBytes = 0;
+        let pendingRemoteCandidates = [];
+
+        const rtcConfig = {
+            iceServers: [],
+            iceCandidatePoolSize: 4
+        };
+
+        document.getElementById('generatedPin').innerText = `${'-'.repeat(PIN_GROUP_SIZE)} ${'-'.repeat(PIN_GROUP_SIZE)}`;
+        document.getElementById('joinPinInput').maxLength = PIN_LENGTH + 1;
+        document.getElementById('joinPinInput').placeholder = `${'0'.repeat(PIN_GROUP_SIZE)}-${'0'.repeat(PIN_GROUP_SIZE)}`;
+        document.getElementById('joinPinInput').style.width = '100%';
+        document.getElementById('joinPinInput').style.maxWidth = `${Math.max(110, PIN_LENGTH * 18)}px`;
+        document.getElementById('joinPinInput').addEventListener('input', (event) => {
+            event.target.value = formatPin(event.target.value);
+            if (autoJoinTimer) {
+                clearTimeout(autoJoinTimer);
+                autoJoinTimer = null;
+            }
+            if (normalizePin(event.target.value).length === PIN_LENGTH) {
+                autoJoinTimer = setTimeout(() => {
+                    autoJoinTimer = null;
+                    if (normalizePin(document.getElementById('joinPinInput').value).length === PIN_LENGTH) {
+                        joinSession();
+                    }
+                }, 250);
+            }
+        });
+        document.getElementById('joinPinInput').addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                joinSession();
+            }
+        });
+        document.getElementById('textInput').classList.add('secure-input', 'concealed');
+
+        function updateStatus(message, color) {
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = message;
+            statusEl.style.color = color;
+        }
+
+        function setErrorStatus(message) {
+            updateStatus(message, 'red');
+        }
+
+        function setInfoStatus(message) {
+            updateStatus(message, '#0056b3');
+        }
+
+        function setConnectedStatus() {
+            updateStatus('Connected', 'green');
+        }
+
+        function updateMqttStatus(message, isConnected) {
+            const mqttStatusEl = document.getElementById('mqttStatus');
+            mqttStatusEl.innerText = message;
+            mqttStatusEl.classList.toggle('connected', isConnected);
+            mqttStatusEl.classList.toggle('disconnected', !isConnected);
+        }
+
+        function setTextInputVisibility(isVisible) {
+            const textInput = document.getElementById('textInput');
+            const toggleButton = document.getElementById('textVisibilityToggle');
+            const hint = document.getElementById('textVisibilityHint');
+            textInput.classList.toggle('concealed', !isVisible);
+            toggleButton.innerText = isVisible ? 'Hide Text' : 'Show Text';
+            hint.innerText = isVisible ? 'Visible on this screen' : 'Hidden while typing';
+        }
+
+        function toggleTextInputVisibility() {
+            const textInput = document.getElementById('textInput');
+            setTextInputVisibility(textInput.classList.contains('concealed'));
+        }
+
+        function normalizePin(value) {
+            return String(value || '').replace(/\D/g, '').slice(0, PIN_LENGTH);
+        }
+
+        function formatPin(value) {
+            const normalized = normalizePin(value);
+            if (normalized.length <= PIN_GROUP_SIZE) return normalized;
+            return `${normalized.slice(0, PIN_GROUP_SIZE)}-${normalized.slice(PIN_GROUP_SIZE)}`;
+        }
+
+        function normalizeManualLanAddress(value) {
+            const trimmed = String(value || '').trim();
+            if (!trimmed) return '';
+            if (isPrivateIpv4(trimmed)) return trimmed;
+            const lowered = trimmed.toLowerCase();
+            if (/^[0-9a-f:.]+$/i.test(lowered) && lowered !== '::' && lowered !== '0:0:0:0:0:0:0:0') {
+                return lowered;
+            }
+            return '';
+        }
+
+        function readManualLanAddressFromQuery() {
+            const params = new URLSearchParams(window.location.search);
+            return normalizeManualLanAddress(
+                params.get('lan_ip')
+                || params.get('ip')
+                || ''
+            );
+        }
+
+        function refreshManualLanAddress() {
+            manualLanAddress = readManualLanAddressFromQuery();
+            return manualLanAddress;
+        }
+
+        function resetFingerprints() {
+            setFingerprint('host', 'Waiting...');
+            setFingerprint('joiner', 'Waiting...');
+        }
+
+        function resetTransferPanel() {
+            document.getElementById('transferPanel').classList.add('disabled');
+            document.getElementById('textInput').value = '';
+            document.getElementById('fileInput').value = '';
+            document.getElementById('fileProgress').innerText = '';
+            document.getElementById('chatLog').replaceChildren();
+            setTextInputVisibility(false);
+        }
+
+        function resetSessionState() {
+            hasPublishedOffer = false;
+            activeSessionId = null;
+            signalingSalt = null;
+            signalingKey = null;
+            localSignalSequence = 0;
+            seenSignalNonces = new Set();
+            seenRemoteSignalSequences = new Set();
+            highestRemoteNonCandidateSequence = 0;
+            pendingRemoteCandidates = [];
+            isHostingSession = false;
+            isJoinStarting = false;
+            hasEstablishedConnection = false;
+            suppressMqttStatusUpdates = false;
+            if (disconnectStatusTimer) {
+                clearTimeout(disconnectStatusTimer);
+                disconnectStatusTimer = null;
+            }
+        }
+
+        function resetRemoteSignalTracking() {
+            seenSignalNonces = new Set();
+            seenRemoteSignalSequences = new Set();
+            highestRemoteNonCandidateSequence = 0;
+        }
+
+        function clearBootstrapAdvertisement() {
+            if (!mqttClient || !currentTopic || !isHostingSession) return;
+            mqttClient.publish(`${currentTopic}/hello`, '', { retain: true });
+        }
+
+        function closeExistingSession() {
+            if (disconnectStatusTimer) {
+                clearTimeout(disconnectStatusTimer);
+                disconnectStatusTimer = null;
+            }
+            clearBootstrapAdvertisement();
+
+            if (dataChannel) {
+                dataChannel.close();
+            }
+
+            if (peerConnection) {
+                peerConnection.close();
+            }
+
+            if (mqttClient) {
+                mqttClient.end(true);
+            }
+
+            dataChannel = null;
+            peerConnection = null;
+            mqttClient = null;
+            updateMqttStatus('Disconnected', false);
+        }
+
+        function attachMqttStatusHandlers(client) {
+            client.on('connect', () => {
+                if (suppressMqttStatusUpdates) return;
+                updateMqttStatus('Connected', true);
+            });
+            client.on('reconnect', () => {
+                if (suppressMqttStatusUpdates) return;
+                updateMqttStatus('Reconnecting...', false);
+            });
+            client.on('close', () => {
+                if (suppressMqttStatusUpdates) return;
+                updateMqttStatus('Disconnected', false);
+            });
+            client.on('offline', () => {
+                if (suppressMqttStatusUpdates) return;
+                updateMqttStatus('Offline', false);
+            });
+            client.on('error', () => {
+                if (suppressMqttStatusUpdates) return;
+                updateMqttStatus('Error', false);
+            });
+        }
+
+        function stopSignaling() {
+            if (!mqttClient) return;
+
+            if (isHostingSession) {
+                clearBootstrapAdvertisement();
+            }
+
+            suppressMqttStatusUpdates = true;
+            mqttClient.end(true);
+            mqttClient = null;
+            updateMqttStatus('Disconnected', false);
+        }
+
+        function setupWebRTC() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            pendingRemoteCandidates = [];
+
+            peerConnection.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                setupDataChannel(dataChannel);
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (!event.candidate) return;
+                if (!event.candidate.candidate) return;
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                if(peerConnection.connectionState === 'connected') {
+                    hasEstablishedConnection = true;
+                    if (disconnectStatusTimer) {
+                        clearTimeout(disconnectStatusTimer);
+                        disconnectStatusTimer = null;
+                    }
+                    setConnectedStatus();
+                    document.getElementById('transferPanel').classList.remove('disabled');
+                    stopSignaling();
+                } else if (peerConnection.connectionState === 'failed') {
+                    if (disconnectStatusTimer) {
+                        clearTimeout(disconnectStatusTimer);
+                        disconnectStatusTimer = null;
+                    }
+                    setErrorStatus('Connection failed');
+                } else if (peerConnection.connectionState === 'disconnected') {
+                    if (disconnectStatusTimer) {
+                        clearTimeout(disconnectStatusTimer);
+                    }
+                    if (hasEstablishedConnection) {
+                        setInfoStatus('Connection interrupted...');
+                        disconnectStatusTimer = setTimeout(() => {
+                            disconnectStatusTimer = null;
+                            if (peerConnection && peerConnection.connectionState === 'disconnected') {
+                                setErrorStatus('Disconnected');
+                            }
+                        }, 5000);
+                    } else {
+                        setErrorStatus('Disconnected');
+                    }
+                } else if (peerConnection.connectionState === 'connecting') {
+                    if (disconnectStatusTimer) {
+                        clearTimeout(disconnectStatusTimer);
+                        disconnectStatusTimer = null;
+                    }
+                    setInfoStatus('Connecting...');
+                } else {
+                    setInfoStatus(peerConnection.connectionState);
+                }
+            };
+        }
+
+        function subscribeToTopics(client, topics) {
+            return new Promise((resolve, reject) => {
+                client.subscribe(topics, (error) => {
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve();
+                    }
+                });
+            });
+        }
+
+        function extractFingerprint(sdp) {
+            const match = sdp.match(/a=fingerprint:sha-256\s+(.*)/);
+            return match ? match[1] : "UNKNOWN";
+        }
+
+        function fingerprintToEmojiString(fingerprint) {
+            if (!fingerprint || fingerprint === 'UNKNOWN') return 'UNKNOWN';
+
+            const bytes = fingerprint
+                .split(':')
+                .map((part) => parseInt(part, 16))
+                .filter((value) => !Number.isNaN(value));
+
+            if (!bytes.length) return fingerprint;
+
+            const selected = [];
+            for (let i = 0; i < 6; i += 1) {
+                const byte = bytes[i] ?? bytes[i % bytes.length];
+                selected.push(FINGERPRINT_EMOJIS[byte % FINGERPRINT_EMOJIS.length]);
+            }
+
+            return selected.join(' ');
+        }
+
+        function parseFingerprintBytes(fingerprint) {
+            if (!fingerprint || fingerprint === 'UNKNOWN') return [];
+
+            return fingerprint
+                .split(':')
+                .map((part) => parseInt(part, 16))
+                .filter((value) => Number.isInteger(value) && value >= 0 && value <= 255);
+        }
+
+        function renderFingerprintRandomArt(fingerprint) {
+            const bytes = parseFingerprintBytes(fingerprint);
+            if (!bytes.length) return 'Waiting...';
+
+            const width = 17;
+            const height = 9;
+            const counts = Array.from({ length: height }, () => Array(width).fill(0));
+            const symbols = ' .o+=*BOX@%&#/^';
+            let x = Math.floor(width / 2);
+            let y = Math.floor(height / 2);
+            const startX = x;
+            const startY = y;
+
+            counts[y][x] += 1;
+
+            for (const byte of bytes) {
+                for (let shift = 0; shift < 8; shift += 2) {
+                    const step = (byte >> shift) & 0x03;
+                    x = Math.max(0, Math.min(width - 1, x + (step & 0x01 ? 1 : -1)));
+                    y = Math.max(0, Math.min(height - 1, y + (step & 0x02 ? 1 : -1)));
+                    counts[y][x] += 1;
+                }
+            }
+
+            const endX = x;
+            const endY = y;
+            const lines = [];
+
+            lines.push(`+${'-'.repeat(width)}+`);
+            for (let row = 0; row < height; row += 1) {
+                let line = '|';
+                for (let col = 0; col < width; col += 1) {
+                    let char;
+                    if (col === startX && row === startY) {
+                        char = 'S';
+                    } else if (col === endX && row === endY) {
+                        char = 'E';
+                    } else {
+                        const visits = Math.min(counts[row][col], symbols.length - 1);
+                        char = symbols[visits];
+                    }
+                    line += char;
+                }
+                line += '|';
+                lines.push(line);
+            }
+            lines.push(`+${'-'.repeat(width)}+`);
+
+            return lines.join('\n');
+        }
+
+        function setFingerprint(role, fingerprint) {
+            const emojiElement = document.getElementById(`${role}Fingerprint`);
+            const artElement = document.getElementById(`${role}FingerprintArt`);
+            const hexElement = document.getElementById(`${role}FingerprintHex`);
+            const emojiValue = fingerprintToEmojiString(fingerprint);
+            const artValue = renderFingerprintRandomArt(fingerprint);
+            const normalizedFingerprint = fingerprint === 'Waiting...' || fingerprint === 'UNKNOWN'
+                ? fingerprint
+                : fingerprint.replace(/:/g, ' ');
+
+            emojiElement.innerText = emojiValue;
+            emojiElement.title = fingerprint;
+            artElement.innerText = artValue;
+            artElement.title = fingerprint;
+            hexElement.innerText = normalizedFingerprint;
+            hexElement.title = fingerprint;
+        }
+
+        function isPlainObject(value) {
+            return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+        }
+
+        function safeJsonParse(rawValue) {
+            try {
+                return JSON.parse(rawValue);
+            } catch (error) {
+                console.warn('Rejected invalid JSON payload', error);
+                return null;
+            }
+        }
+
+        function isValidSdpType(type) {
+            return type === 'offer' || type === 'answer';
+        }
+
+        function isValidSessionDescription(data) {
+            return isPlainObject(data)
+                && isValidSdpType(data.type)
+                && typeof data.sdp === 'string'
+                && data.sdp.length > 0;
+        }
+
+        function isValidBootstrapMessage(data) {
+            return isPlainObject(data)
+                && typeof data.sessionId === 'string'
+                && /^[a-f0-9]{32}$/i.test(data.sessionId)
+                && typeof data.salt === 'string'
+                && data.salt.length >= 16
+                && Number.isSafeInteger(data.createdAt);
+        }
+
+        function isFreshBootstrapMessage(data) {
+            return isValidBootstrapMessage(data)
+                && Math.abs(Date.now() - data.createdAt) <= BOOTSTRAP_MAX_AGE_MS;
+        }
+
+        function sanitizeFilename(name) {
+            if (typeof name !== 'string') return 'download';
+            const sanitized = name
+                .replace(/[\\/\0]/g, '_')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 255);
+
+            return sanitized || 'download';
+        }
+
+        function isValidFileMetaMessage(message) {
+            return isPlainObject(message)
+                && message.type === 'file-meta'
+                && typeof message.name === 'string'
+                && message.name.length > 0
+                && typeof message.mime === 'string'
+                && Number.isSafeInteger(message.size)
+                && message.size >= 0;
+        }
+
+        function isValidTextMessage(message) {
+            return isPlainObject(message)
+                && message.type === 'text'
+                && typeof message.payload === 'string';
+        }
+
+        function isValidSignedSignalMessage(message) {
+            return isPlainObject(message)
+                && typeof message.sessionId === 'string'
+                && (message.sender === 'host' || message.sender === 'joiner')
+                && typeof message.type === 'string'
+                && Number.isSafeInteger(message.seq)
+                && message.seq > 0
+                && typeof message.nonce === 'string'
+                && message.nonce.length >= 16
+                && typeof message.mac === 'string'
+                && isPlainObject(message.payload);
+        }
+
+        function toHex(bytes) {
+            return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+        }
+
+        function toBase64(bytes) {
+            let binary = '';
+            for (const value of bytes) {
+                binary += String.fromCharCode(value);
+            }
+            return btoa(binary);
+        }
+
+        function fromBase64(value) {
+            const binary = atob(value);
+            return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        }
+
+        function createRandomHex(length) {
+            const bytes = new Uint8Array(length);
+            crypto.getRandomValues(bytes);
+            return toHex(bytes);
+        }
+
+        function createRandomBase64(length) {
+            const bytes = new Uint8Array(length);
+            crypto.getRandomValues(bytes);
+            return toBase64(bytes);
+        }
+
+        function createRandomPin(length) {
+            const digits = [];
+
+            while (digits.length < length) {
+                const bytes = new Uint8Array(length - digits.length);
+                crypto.getRandomValues(bytes);
+
+                for (const value of bytes) {
+                    if (value >= 250) continue;
+                    digits.push(String(value % 10));
+                    if (digits.length === length) break;
+                }
+            }
+
+            return digits.join('');
+        }
+
+        async function deriveSignalingKey(pin, salt) {
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                textEncoder.encode(pin),
+                'PBKDF2',
+                false,
+                ['deriveKey']
+            );
+
+            return crypto.subtle.deriveKey(
+                {
+                    name: 'PBKDF2',
+                    salt: fromBase64(salt),
+                    iterations: SIGNALING_KEY_ITERATIONS,
+                    hash: 'SHA-256'
+                },
+                keyMaterial,
+                {
+                    name: 'HMAC',
+                    hash: 'SHA-256',
+                    length: 256
+                },
+                false,
+                ['sign', 'verify']
+            );
+        }
+
+        async function deriveTopicSuffix(pin) {
+            const digest = await crypto.subtle.digest(
+                'SHA-256',
+                textEncoder.encode(`${SIGNALING_NAMESPACE}:${SIGNALING_TOPIC_CONTEXT}:${pin}`)
+            );
+
+            return toHex(new Uint8Array(digest)).slice(0, 32);
+        }
+
+        function serializeSignedSignal(message) {
+            return JSON.stringify({
+                sessionId: message.sessionId,
+                sender: message.sender,
+                type: message.type,
+                seq: message.seq,
+                nonce: message.nonce,
+                payload: message.payload
+            });
+        }
+
+        async function signSignalMessage(type, payload) {
+            localSignalSequence += 1;
+            const envelope = {
+                sessionId: activeSessionId,
+                sender: isHostingSession ? 'host' : 'joiner',
+                type,
+                seq: localSignalSequence,
+                nonce: createRandomHex(16),
+                payload
+            };
+            const signature = await crypto.subtle.sign(
+                'HMAC',
+                signalingKey,
+                textEncoder.encode(serializeSignedSignal(envelope))
+            );
+
+            return {
+                ...envelope,
+                mac: toBase64(new Uint8Array(signature))
+            };
+        }
+
+        async function verifySignedSignalMessage(message, expectedType, expectedSender) {
+            if (!signalingKey || !activeSessionId || !isValidSignedSignalMessage(message)) {
+                return false;
+            }
+
+            if (message.sessionId !== activeSessionId
+                || message.sender !== expectedSender
+                || message.type !== expectedType
+                || seenSignalNonces.has(message.nonce)
+                || seenRemoteSignalSequences.has(message.seq)
+            ) {
+                return false;
+            }
+
+            if (message.type !== 'candidate' && message.seq <= highestRemoteNonCandidateSequence) {
+                return false;
+            }
+
+            let verified = false;
+            try {
+                verified = await crypto.subtle.verify(
+                    'HMAC',
+                    signalingKey,
+                    fromBase64(message.mac),
+                    textEncoder.encode(serializeSignedSignal(message))
+                );
+            } catch (error) {
+                console.warn('Rejected invalid message MAC', error);
+                return false;
+            }
+
+            if (!verified) return false;
+            seenSignalNonces.add(message.nonce);
+            seenRemoteSignalSequences.add(message.seq);
+            if (message.type !== 'candidate') {
+                highestRemoteNonCandidateSequence = message.seq;
+            }
+            return true;
+        }
+
+        async function publishSignedSignal(topicSuffix, type, payload, options) {
+            if (!mqttClient || !signalingKey || !activeSessionId) {
+                throw new Error('Signaling is not ready');
+            }
+
+            const message = await signSignalMessage(type, payload);
+            mqttClient.publish(`${currentTopic}/${topicSuffix}`, JSON.stringify(message), options);
+        }
+
+        function isPrivateIpv4(address) {
+            const parts = address.split('.').map((part) => Number(part));
+            if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+                return false;
+            }
+
+            return parts[0] === 10
+                || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+                || (parts[0] === 192 && parts[1] === 168)
+                || (parts[0] === 169 && parts[1] === 254)
+                || parts[0] === 127;
+        }
+
+        function isAllowedLanAddress(address) {
+            if (typeof address !== 'string' || !address) return false;
+            const normalized = address.trim().toLowerCase();
+
+            if (normalized === 'localhost') return true;
+            if (normalized.endsWith('.local')) return true;
+            if (normalized.includes(':')) {
+                return /^[0-9a-f:.]+$/i.test(normalized)
+                    && normalized !== '::'
+                    && normalized !== '0:0:0:0:0:0:0:0';
+            }
+
+            return isPrivateIpv4(normalized);
+        }
+
+        function parseIceCandidateAddress(candidateString) {
+            if (typeof candidateString !== 'string') return null;
+            const parts = candidateString.trim().split(/\s+/);
+            if (parts.length < 8 || !parts[0].startsWith('candidate:')) return null;
+            return {
+                address: parts[4],
+                protocol: parts[2] ? parts[2].toLowerCase() : '',
+                type: parts[7],
+                tcpType: parts[9] === 'tcptype' ? (parts[10] || '').toLowerCase() : ''
+            };
+        }
+
+        function replaceCandidateAddress(candidateString, address) {
+            if (typeof candidateString !== 'string' || !address) return candidateString;
+            const parts = candidateString.trim().split(/\s+/);
+            if (parts.length < 8 || !parts[0].startsWith('candidate:')) return candidateString;
+            parts[4] = address;
+            return parts.join(' ');
+        }
+
+        function applyManualLanAddressToSdp(description) {
+            if (!description || typeof description.sdp !== 'string') return description;
+            const overrideAddress = refreshManualLanAddress();
+            if (!overrideAddress) return description;
+
+            const sdp = description.sdp.split(/\r?\n/).map((line) => {
+                if (!line.startsWith('a=candidate:')) return line;
+                const candidateValue = line.slice(2);
+                const parsed = parseIceCandidateAddress(candidateValue);
+                if (!parsed || parsed.type !== 'host') return line;
+                return `a=${replaceCandidateAddress(candidateValue, overrideAddress)}`;
+            }).join('\r\n');
+
+            return {
+                type: description.type,
+                sdp
+            };
+        }
+
+        function isAllowedIceCandidate(candidate) {
+            if (!isPlainObject(candidate) || typeof candidate.candidate !== 'string') return false;
+            const parsed = parseIceCandidateAddress(candidate.candidate);
+            if (!parsed) return false;
+            return parsed.type === 'host' && isAllowedLanAddress(parsed.address);
+        }
+
+        function hasOnlySupportedIceCandidates(sdp) {
+            if (typeof sdp !== 'string' || !sdp.trim()) return false;
+
+            const candidateLines = sdp.split(/\r?\n/).filter((line) => line.startsWith('a=candidate:'));
+            return candidateLines.length > 0
+                && candidateLines.every((line) => isAllowedIceCandidate({ candidate: line.slice(2) }));
+        }
+
+        function waitForIceGatheringComplete(connection, timeoutMs = 5000) {
+            return new Promise((resolve) => {
+                if (!connection || connection.iceGatheringState === 'complete') {
+                    resolve();
+                    return;
+                }
+
+                let settled = false;
+                let timerId = null;
+
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        clearTimeout(timerId);
+                    }
+                    connection.removeEventListener('icegatheringstatechange', handleStateChange);
+                    resolve();
+                };
+
+                const handleStateChange = () => {
+                    if (connection.iceGatheringState === 'complete') {
+                        finish();
+                    }
+                };
+
+                timerId = setTimeout(finish, timeoutMs);
+                connection.addEventListener('icegatheringstatechange', handleStateChange);
+            });
+        }
+
+        async function addValidatedIceCandidate(candidate) {
+            if (!isAllowedIceCandidate(candidate)) {
+                console.warn('Rejected non-LAN remote ICE candidate');
+                setErrorStatus('Rejected non-LAN connection candidate');
+                return;
+            }
+
+            if (!peerConnection.remoteDescription) {
+                pendingRemoteCandidates.push(candidate);
+                return;
+            }
+
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+                console.warn('Rejected invalid ICE candidate', error);
+            }
+        }
+
+        async function flushPendingIceCandidates() {
+            const queuedCandidates = pendingRemoteCandidates;
+            pendingRemoteCandidates = [];
+
+            for (const candidate of queuedCandidates) {
+                await addValidatedIceCandidate(candidate);
+            }
+        }
+
+        // --- Data Channel Logic ---
+        function setupDataChannel(channel) {
+            channel.binaryType = 'arraybuffer';
+
+            channel.onmessage = (event) => {
+                // Handle String (Text/Code or File Metadata)
+                if (typeof event.data === 'string') {
+                    const message = safeJsonParse(event.data);
+                    if (!message) return;
+
+                    if (isValidTextMessage(message)) {
+                        renderTextMessage("Peer", message.payload, { concealed: true, collapsed: true });
+                    } else if (isValidFileMetaMessage(message)) {
+                        // Prepare to receive a file
+                        incomingFileInfo = {
+                            ...message,
+                            name: sanitizeFilename(message.name)
+                        };
+                        incomingFileData = [];
+                        receivedBytes = 0;
+                        logMessage("System", `Receiving file: ${incomingFileInfo.name} (${incomingFileInfo.size} bytes)...`);
+                    } else {
+                        console.warn('Rejected unexpected data channel message');
+                    }
+                }
+                // Handle Binary (File Chunks)
+                else if (event.data instanceof ArrayBuffer) {
+                    if (!incomingFileInfo) {
+                        console.warn('Rejected binary payload without file metadata');
+                        return;
+                    }
+
+                    incomingFileData.push(event.data);
+                    receivedBytes += event.data.byteLength;
+
+                    if (receivedBytes > incomingFileInfo.size) {
+                        console.warn('Rejected oversized file payload');
+                        incomingFileInfo = null;
+                        incomingFileData = [];
+                        receivedBytes = 0;
+                        return;
+                    }
+
+            if (receivedBytes === incomingFileInfo.size) {
+                assembleAndDownloadFile();
+            }
+        }
+            };
+        }
+
+        function sendText() {
+            const text = document.getElementById('textInput').value;
+            if (!text || !dataChannel) return;
+            const isVisible = !document.getElementById('textInput').classList.contains('concealed');
+            dataChannel.send(JSON.stringify({ type: 'text', payload: text }));
+            renderTextMessage("Me", text, { concealed: !isVisible, collapsed: true });
+            document.getElementById('textInput').value = '';
+            setTextInputVisibility(false);
+        }
+
+        function sendFile() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file || !dataChannel) return;
+
+            // 1. Send Metadata
+            dataChannel.send(JSON.stringify({
+                type: 'file-meta',
+                name: file.name,
+                size: file.size,
+                mime: file.type
+            }));
+
+            // 2. Read and Send Chunks
+            const reader = new FileReader();
+            let offset = 0;
+
+            reader.onload = (e) => {
+                dataChannel.send(e.target.result);
+                offset += e.target.result.byteLength;
+                document.getElementById('fileProgress').innerText = `Sent: Math.round((offset / file.size) * 100)%`;
+
+                if (offset < file.size) {
+                    readNextChunk();
+                } else {
+                    document.getElementById('fileProgress').innerText = " Done!";
+                }
+            };
+
+            function readNextChunk() {
+                const slice = file.slice(offset, offset + CHUNK_SIZE);
+                reader.readAsArrayBuffer(slice);
+            }
+            readNextChunk();
+        }
+
+        function assembleAndDownloadFile() {
+            const blob = new Blob(incomingFileData, { type: incomingFileInfo.mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = incomingFileInfo.name;
+            a.innerText = `Download ${incomingFileInfo.name}`;
+            a.style.display = 'block';
+            document.getElementById('chatLog').appendChild(a);
+            incomingFileInfo = null;
+        }
+
+        function logMessage(sender, text) {
+            const log = document.getElementById('chatLog');
+            const div = document.createElement('div');
+            const label = document.createElement('strong');
+            label.textContent = `${sender}: `;
+            div.appendChild(label);
+            div.appendChild(document.createTextNode(text));
+            div.style.marginBottom = "5px";
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function copyTextToClipboard(text, statusElement) {
+            try {
+                await navigator.clipboard.writeText(text);
+                if (statusElement) statusElement.innerText = 'Copied';
+            } catch (error) {
+                console.warn('Clipboard write failed', error);
+                if (statusElement) statusElement.innerText = 'Copy failed';
+            }
+        }
+
+        function setMessageVisibility(preElement, button, isVisible) {
+            preElement.classList.toggle('concealed', !isVisible);
+            button.innerText = isVisible ? 'Hide' : 'Reveal';
+        }
+
+        function setMessageCollapsed(preElement, button, isCollapsed) {
+            preElement.classList.toggle('collapsed', isCollapsed);
+            const hasOverflow = isCollapsed && preElement.scrollHeight > preElement.clientHeight + 1;
+            preElement.classList.toggle('collapsed-overflow', hasOverflow);
+            button.innerText = isCollapsed ? 'Expand' : 'Collapse';
+        }
+
+        function renderTextMessage(sender, text, options) {
+            const log = document.getElementById('chatLog');
+            const card = document.createElement('div');
+            const meta = document.createElement('div');
+            const title = document.createElement('strong');
+            const actions = document.createElement('div');
+            const revealButton = document.createElement('button');
+            const collapseButton = document.createElement('button');
+            const copyButton = document.createElement('button');
+            const status = document.createElement('span');
+            const pre = document.createElement('pre');
+            const concealByDefault = options && options.concealed !== false;
+            const collapseByDefault = options && options.collapsed !== false;
+
+            card.className = 'message-card';
+            meta.className = 'message-meta';
+            actions.className = 'message-actions';
+            status.className = 'message-status';
+            pre.className = 'message-text';
+            pre.textContent = text;
+            title.textContent = sender;
+
+            revealButton.type = 'button';
+            revealButton.addEventListener('click', () => {
+                setMessageVisibility(pre, revealButton, pre.classList.contains('concealed'));
+            });
+
+            collapseButton.type = 'button';
+            collapseButton.addEventListener('click', () => {
+                setMessageCollapsed(pre, collapseButton, !pre.classList.contains('collapsed'));
+            });
+
+            copyButton.type = 'button';
+            copyButton.innerText = 'Copy';
+            copyButton.addEventListener('click', () => {
+                copyTextToClipboard(text, status);
+            });
+
+            actions.appendChild(revealButton);
+            actions.appendChild(collapseButton);
+            actions.appendChild(copyButton);
+            actions.appendChild(status);
+            meta.appendChild(title);
+            meta.appendChild(actions);
+            card.appendChild(meta);
+            card.appendChild(pre);
+
+            setMessageVisibility(pre, revealButton, !concealByDefault);
+            setMessageCollapsed(pre, collapseButton, collapseByDefault);
+
+            log.appendChild(card);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // --- Signaling Logic ---
+        async function hostSession() {
+            // Generate random PIN with the configured length.
+            closeExistingSession();
+            resetSessionState();
+            resetFingerprints();
+            resetTransferPanel();
+            refreshManualLanAddress();
+
+            const pin = createRandomPin(PIN_LENGTH);
+            currentPin = pin;
+            activeSessionId = createRandomHex(16);
+            signalingSalt = createRandomBase64(16);
+            signalingKey = await deriveSignalingKey(pin, signalingSalt);
+            isHostingSession = true;
+            document.getElementById('generatedPin').innerText = formatPin(pin);
+            setInfoStatus('Hosting session...');
+
+            currentTopic = `lanrtc/${await deriveTopicSuffix(pin)}`;
+            mqttClient = mqtt.connect(MQTT_SERVER_URL);
+            attachMqttStatusHandlers(mqttClient);
+            setupWebRTC();
+
+            dataChannel = peerConnection.createDataChannel("secureTransfer");
+            setupDataChannel(dataChannel);
+
+            mqttClient.on('connect', async () => {
+                setInfoStatus('Waiting for joiner...');
+                await subscribeToTopics(mqttClient, [
+                    currentTopic + "/hello",
+                    currentTopic + "/ready",
+                    currentTopic + "/answer"
+                ]);
+                clearBootstrapAdvertisement();
+                mqttClient.publish(`${currentTopic}/hello`, JSON.stringify({
+                    sessionId: activeSessionId,
+                    salt: signalingSalt,
+                    createdAt: Date.now()
+                }), { retain: true });
+            });
+
+            mqttClient.on('message', async (topic, message) => {
+                if (topic.endsWith("/hello")) return;
+
+                const data = safeJsonParse(message.toString());
+                if (!data) return;
+
+                if (topic.endsWith("/ready")) {
+                    if (!await verifySignedSignalMessage(data, 'ready', 'joiner') || data.payload.ready !== true) {
+                        console.warn('Rejected invalid ready message');
+                        return;
+                    }
+                    if (hasPublishedOffer) return;
+                    hasPublishedOffer = true;
+
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    await waitForIceGatheringComplete(peerConnection);
+                    const finalOffer = applyManualLanAddressToSdp(peerConnection.localDescription);
+                    if (!hasOnlySupportedIceCandidates(finalOffer.sdp)) {
+                        setErrorStatus('Host has no usable ICE candidates');
+                        return;
+                    }
+                    setFingerprint('host', extractFingerprint(finalOffer.sdp));
+                    await publishSignedSignal('offer', 'offer', finalOffer);
+                } else if (topic.endsWith("/answer")) {
+                    if (!await verifySignedSignalMessage(data, 'answer', 'joiner') || !isValidSessionDescription(data.payload) || data.payload.type !== 'answer') {
+                        console.warn('Rejected invalid answer payload');
+                        setErrorStatus('Rejected invalid answer');
+                        return;
+                    }
+                    if (!hasOnlySupportedIceCandidates(data.payload.sdp)) {
+                        setErrorStatus('Rejected answer with unsupported network path');
+                        return;
+                    }
+                    setFingerprint('joiner', extractFingerprint(data.payload.sdp));
+                    try {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.payload));
+                        await flushPendingIceCandidates();
+                    } catch (error) {
+                        console.warn('Rejected invalid remote answer', error);
+                        setErrorStatus('Rejected invalid answer description');
+                    }
+                }
+            });
+        }
+
+        async function joinSession() {
+            if (isJoinStarting) return;
+
+            closeExistingSession();
+            resetSessionState();
+            isJoinStarting = true;
+            resetFingerprints();
+            resetTransferPanel();
+            refreshManualLanAddress();
+
+            const pin = normalizePin(document.getElementById('joinPinInput').value);
+            document.getElementById('joinPinInput').value = formatPin(pin);
+            if(pin.length !== PIN_LENGTH) {
+                isJoinStarting = false;
+                return alert(`Enter the ${PIN_LENGTH}-digit PIN from Device A`);
+            }
+
+            currentPin = pin;
+
+            currentTopic = `lanrtc/${await deriveTopicSuffix(pin)}`;
+            mqttClient = mqtt.connect(MQTT_SERVER_URL);
+            attachMqttStatusHandlers(mqttClient);
+            setupWebRTC();
+            setInfoStatus('Joining session...');
+
+            mqttClient.on('connect', async () => {
+                isJoinStarting = false;
+                await subscribeToTopics(mqttClient, [
+                    currentTopic + "/hello",
+                    currentTopic + "/offer"
+                ]);
+                setInfoStatus('Waiting for host session...');
+            });
+
+            mqttClient.on('error', () => {
+                isJoinStarting = false;
+            });
+
+            mqttClient.on('close', () => {
+                isJoinStarting = false;
+            });
+
+            mqttClient.on('offline', () => {
+                isJoinStarting = false;
+            });
+
+            mqttClient.on('message', async (topic, message) => {
+                const data = safeJsonParse(message.toString());
+                if (!data) return;
+
+                if (topic.endsWith("/hello")) {
+                    if (!isValidBootstrapMessage(data)) {
+                        console.warn('Rejected invalid bootstrap message');
+                        return;
+                    }
+
+                    if (!isFreshBootstrapMessage(data)) {
+                        console.warn('Rejected stale bootstrap message');
+                        return;
+                    }
+
+                    if (activeSessionId === data.sessionId && signalingSalt === data.salt && signalingKey) {
+                        return;
+                    }
+
+                    activeSessionId = data.sessionId;
+                    signalingSalt = data.salt;
+                    signalingKey = await deriveSignalingKey(currentPin, signalingSalt);
+                    localSignalSequence = 0;
+                    resetRemoteSignalTracking();
+                    await publishSignedSignal('ready', 'ready', { ready: true });
+                    setInfoStatus('Waiting for host offer...');
+                } else if (topic.endsWith("/offer")) {
+                    if (!await verifySignedSignalMessage(data, 'offer', 'host') || !isValidSessionDescription(data.payload) || data.payload.type !== 'offer') {
+                        console.warn('Rejected invalid offer payload');
+                        setErrorStatus('Rejected invalid offer');
+                        return;
+                    }
+                    if (!hasOnlySupportedIceCandidates(data.payload.sdp)) {
+                        setErrorStatus('Rejected offer with unsupported network path');
+                        return;
+                    }
+                    setFingerprint('host', extractFingerprint(data.payload.sdp));
+                    try {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.payload));
+                        await flushPendingIceCandidates();
+                    } catch (error) {
+                        console.warn('Rejected invalid remote offer', error);
+                        setErrorStatus('Rejected invalid offer description');
+                        return;
+                    }
+
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    await waitForIceGatheringComplete(peerConnection);
+                    const finalAnswer = applyManualLanAddressToSdp(peerConnection.localDescription);
+                    if (!hasOnlySupportedIceCandidates(finalAnswer.sdp)) {
+                        setErrorStatus('Joiner has no usable ICE candidates');
+                        return;
+                    }
+                    setFingerprint('joiner', extractFingerprint(finalAnswer.sdp));
+
+                    await publishSignedSignal('answer', 'answer', finalAnswer);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
